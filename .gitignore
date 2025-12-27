@@ -1,0 +1,15 @@
+# Generated images
+**/assets/generated/*.png
+**/assets/generated/*.jpg
+**/assets/generated/.refs/
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+*.local.md
+
+# OS
+.DS_Store

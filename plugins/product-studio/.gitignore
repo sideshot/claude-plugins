@@ -1,0 +1,13 @@
+# Generated assets
+assets/generated/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local settings
+.claude/*.local.md
+
+# OS files
+.DS_Store

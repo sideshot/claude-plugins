@@ -1,0 +1,21 @@
+{
+  "name": "sideshot-tools",
+  "owner": {
+    "name": "sideshot"
+  },
+  "plugins": [
+    {
+      "name": "product-studio",
+      "source": "./plugins/product-studio",
+      "description": "AI-powered product image generation for e-commerce",
+      "version": "0.1.0",
+      "keywords": [
+        "image-generation",
+        "product-images",
+        "e-commerce",
+        "infographics",
+        "gemini"
+      ]
+    }
+  ]
+}
