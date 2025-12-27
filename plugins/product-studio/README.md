@@ -1,102 +1,45 @@
-# product-studio
+# Product Studio - Image Generation
 
-AI-powered product image generation for e-commerce using a structured workflow:
+AI-powered product image generation for e-commerce.
 
-**Search → Reference → Brand → Create → Verify**
+## Workflow
 
-## Features
+1.  **Search**: Finds reference images via Tavily based on your subject.
+2.  **Fetch**: Downloads the first reference image via ScrapeNinja.
+3.  **Generate**: Uses Gemini 3 Pro to generate a new image, using the reference image for structural accuracy and applying your style instructions.
+4.  **Save**: Outputs generated PNG and saves reference image for verification.
 
-- Generate infographics, exploded views, marketing shots, technical diagrams
-- Automatic reference image discovery via Tavily
-- Smart image selection using Claude Haiku (consensus + clarity)
-- Brand-aware generation with user's brand guidelines
-- Support for ASCII sketches as generation guidance
-- Multiple aspect ratios: 1:1, 3:4, 4:3, 9:16, 16:9, 21:9
+## Setup
 
-## Prerequisites
-
-### Required Environment Variables
+Set environment variables:
 
 ```bash
-export TAVILY_API_KEY="your-tavily-api-key"
-export SCRAPENINJA_API_KEY="your-scrapeninja-api-key"
-export GEMINI_API_KEY="your-gemini-api-key"
-export ANTHROPIC_API_KEY="your-anthropic-api-key"
+export TAVILY_API_KEY="..."
+export SCRAPENINJA_API_KEY="..."
+export GEMINI_API_KEY="..."
 ```
 
-Get your API keys from:
-- Tavily: https://tavily.com
-- ScrapeNinja: https://rapidapi.com/restyler/api/scrapeninja
-- Gemini: https://aistudio.google.com/apikey
-- Anthropic: https://console.anthropic.com
+## Usage
 
-### Required Tools
-
-- Python 3.10+
-- [uv](https://github.com/astral-sh/uv) - Fast Python package manager
-
-## Quick Start
-
-### Direct Script Usage
+Run the script using `uv`:
 
 ```bash
 uv run skills/image-generation/scripts/product_studio.py \
-  --image-reference-query "[BRAND] [SERIES] [PRODUCT TYPE] exploded view components" \
-  --prompt-image-creation-needs '{"colors": ["#0066cc", "#333333"], "style": "technical diagram", "labels": ["Component A", "Component B", "Component C"]}' \
+  --subject "Modern kitchen faucet installation diagram" \
+  --style-instructions "Technical illustration, white background, labeled" \
+  --resolution 2k \
+  --aspect-ratio 21:9 \
   --output "assets/generated/"
 ```
 
-### Via Claude Code Command
+### Parameters
 
-```bash
-/product-studio:generate
-```
+- `--subject`: Search query and image topic. Be specific (include Brand, Model, Type).
+- `--style-instructions`: Formatting and visual style directives.
+- `--resolution`: `1k`, `2k`, `4k`.
+- `--aspect-ratio`: `21:9` (default), `16:9`, `4:3`, `1:1`.
+- `--debug`: Enable verbose logging of prompts and responses.
 
-## Parameters
+## Reference
 
-The command accepts:
-- **image-reference-query**: Search query for finding reference images
-- **prompt-image-creation-needs**: JSON with `colors`, `style`, `labels` (optional), `ascii_sketch` (optional)
-- **extra-gen-parameters**: Gemini parameters (ratio, detail, count)
-- **output**: Output directory (default: `assets/generated/`)
-
-## Output
-
-Generated images are saved to `assets/generated/` along with:
-- Reference images used (for debugging)
-- Generation metadata
-
-## Brand Guidelines
-
-The plugin looks for a `brand-guidelines` skill or similar to extract:
-- Brand colors (hex codes)
-- Style preferences
-- Target audience
-
-If not found, the agent will ask for brand information.
-
-## Supported Image Types
-
-- Product infographics
-- Exploded view diagrams
-- Marketing/lifestyle shots
-- Technical diagrams
-- Comparison charts
-- Component breakdowns
-
-## Aspect Ratios
-
-| Ratio | Use Case |
-|-------|----------|
-| 21:9 | Ultrawide banners (default) |
-| 16:9 | Standard widescreen |
-| 4:3 | Traditional format |
-| 3:4 | Portrait format |
-| 1:1 | Square (social media) |
-| 9:16 | Vertical/mobile |
-
-## Detail Levels
-
-- **1k** (default): Fast generation, good for drafts
-- **2k**: Balanced quality and speed
-- **4k**: Highest quality, slower generation
+See `skills/image-generation/SKILL.md` for detailed integration guide.

@@ -1,7 +1,7 @@
 ---
 name: Image Generation
 description: This skill should be used when the user asks to "generate product images", "create infographics", "make exploded view diagrams", "create marketing shots", "generate e-commerce visuals", "build product diagrams", or mentions image generation for products. Provides guidance on using the product_studio.py script.
-version: 0.1.0
+version: 0.2.0
 ---
 
 # Product Image Generation
@@ -12,79 +12,67 @@ Generate professional product images using the `product_studio.py` script.
 
 ```bash
 uv run ${CLAUDE_PLUGIN_ROOT}/skills/image-generation/scripts/product_studio.py \
-  --image-reference-query "SEARCH QUERY" \
-  --prompt-image-creation-needs '{"colors": [...], "style": "...", ...}' \
-  --extra-gen-parameters '{"ratio": "21:9", "detail": "1k", "count": 1}' \
-  --output "assets/generated/"
+  --subject "[Brand] [Model] [product type] exploded view" \
+  --style-instructions "Technical diagram style, white background, clean lines" \
+  --resolution 2k \
+  --aspect-ratio 21:9 \
+  --output "assets/generated/" \
+  --debug
 ```
 
 ## Parameters
 
-### --image-reference-query (required)
-Search query to find reference images. **This is also the image description** - be specific.
+### --subject (required)
+Product/component description for search and generation. This is used as the Tavily search query and the primary image description for Gemini.
 
-**Query template:** `"[BRAND] [SERIES] [CATEGORY] [VIEW TYPE]"`
-
-Good queries:
+**Good subjects:**
 - `"[Brand] [Model] [product type] exploded view components"`
 - `"[Brand] [Series] [product category] installation diagram"`
 - `"[product type] mechanism cross section"`
 
-Bad queries:
-- `"[product type]"` (too vague)
-- `"product"` (useless)
-
-### --prompt-image-creation-needs (required)
-JSON object with these fields:
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `colors` | array | Yes | Hex color codes: `["#dc2626", "#111827"]` |
-| `style` | string | Yes | `"technical diagram"`, `"infographic"`, `"marketing shot"`, `"educational"` |
-| `labels` | array | No | Text labels to include: `["Part A", "Part B"]`. Omit for no text. |
-| `ascii_sketch` | string | No | Layout guide: `"[LEFT: Product] | [RIGHT: Features]"` |
+### --style-instructions (optional)
+Format and style directives appended to the generation prompt.
 
 **Examples:**
+- `"Technical diagram style, white background, labeled components"`
+- `"Marketing shot with soft shadows, professional lighting, brand color accents"`
+- `"Clean infographic, side-by-side comparison"`
 
-Clean product shot (no text):
-```json
-{"colors": ["#333333", "#ffffff"], "style": "marketing shot"}
-```
+### --resolution (optional)
+Output resolution. Default: `1k`
+- `1k` (Draft)
+- `2k` (Web/Production)
+- `4k` (Print)
 
-Technical diagram with labels:
-```json
-{"colors": ["#dc2626", "#333333"], "style": "technical diagram", "labels": ["Component A", "Component B", "Bracket"]}
-```
-
-Infographic with layout:
-```json
-{"colors": ["#0066cc", "#ffffff"], "style": "infographic", "labels": ["Feature 1", "Feature 2"], "ascii_sketch": "[Product]--[Callout 1]\n         \\--[Callout 2]"}
-```
-
-### --extra-gen-parameters (optional)
-JSON object for Gemini settings:
-
-| Field | Default | Options |
-|-------|---------|---------|
-| `ratio` | `"21:9"` | `"1:1"`, `"3:4"`, `"4:3"`, `"9:16"`, `"16:9"`, `"21:9"` |
-| `detail` | `"1k"` | `"1k"` (draft), `"2k"` (production), `"4k"` (print) |
-| `count` | `1` | Number of images to generate |
+### --aspect-ratio (optional)
+Output aspect ratio. Default: `21:9`
+Options: `1:1`, `4:3`, `3:4`, `16:9`, `9:16`, `21:9`, `3:2`, `2:3`
 
 ### --output (optional)
 Output directory. Default: `assets/generated/`
 
+### --debug (optional)
+Print detailed prompts and API responses to stderr.
+
 ## Output
 
-The script returns JSON:
+Returns JSON:
 ```json
 {
   "status": "success",
-  "files": ["assets/generated/product_001.png"],
-  "reference_images": ["assets/generated/.refs/ref_0.jpg"],
-  "token_usage": {"input": 1200, "output": 800, "total": 2000},
-  "message": "Generated 1 image successfully"
+  "files": ["assets/generated/product_20251226_143022_0.png"],
+  "reference_images": ["assets/generated/.refs/ref_20251226_143022_0.jpg"],
+  "token_usage": {"input": 415, "output": 1502, "total": 1917},
+  "message": "Generated 1 image(s)"
 }
 ```
+
+## Workflow
+
+1. **Search** - Tavily image search using `--subject`
+2. **Fetch** - Download first reference image via ScrapeNinja
+3. **Generate** - Gemini creates image using reference image context
+4. **Save** - Output files and reference image saved
 
 ## Required Environment Variables
 
@@ -92,20 +80,4 @@ The script returns JSON:
 export TAVILY_API_KEY="..."      # Image search
 export SCRAPENINJA_API_KEY="..." # Image fetching
 export GEMINI_API_KEY="..."      # Image generation
-export ANTHROPIC_API_KEY="..."   # Reference selection
 ```
-
-## Common Issues
-
-**No reference images found**: Broaden search terms, remove model numbers.
-
-**Wrong product generated**: Be more specific in query, add exclusions like `"NOT [unwanted variant]"`.
-
-**Unwanted text in image**: Omit `labels` field entirely for clean images.
-
-**Quality too low**: Increase detail to `"2k"` or `"4k"`.
-
-## References
-
-- **`references/prompt-patterns.md`** - Example prompts by image type
-- **`references/troubleshooting.md`** - Detailed error resolution

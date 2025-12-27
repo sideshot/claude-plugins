@@ -1,7 +1,7 @@
 {
   "name": "product-studio",
   "version": "0.1.0",
-  "description": "AI-powered product image generation for e-commerce: infographics, diagrams, marketing shots, and technical visuals using a search-reference-brand-create-verify workflow",
+  "description": "AI-powered product image generation for e-commerce using Gemini 3 Pro and Tavily. Generates infographics, diagrams, marketing shots, and technical visuals by finding real reference images and creating new, accurate visuals based on them.",
   "author": {
     "name": "Richard",
     "email": ""

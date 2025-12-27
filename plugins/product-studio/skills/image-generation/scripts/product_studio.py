@@ -11,13 +11,14 @@
 """
 Product Studio - AI-powered product image generation for e-commerce.
 
-Workflow: Search → Reference → Brand → Create → Verify
+Workflow: Search → Fetch → Select → Generate → Save
 
 Usage:
     uv run product_studio.py \
-        --image-reference-query "Blum TANDEM drawer slide exploded view" \
-        --prompt-image-creation-needs '{"colors": ["#dc2626"], "style": "technical diagram", ...}' \
-        --extra-gen-parameters '{"ratio": "21:9", "detail": "1k", "count": 1}' \
+        --subject "[Brand] [Model] [product type] exploded view" \
+        --style-instructions "Technical diagram, white background" \
+        --resolution 2k \
+        --aspect-ratio 21:9 \
         --output "assets/generated/"
 """
 
@@ -25,39 +26,12 @@ import argparse
 import base64
 import io
 import json
-import mimetypes
 import os
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
-
-# Pre-flight check for imports
-def check_dependencies() -> list[str]:
-    """Check if all required dependencies are available."""
-    missing = []
-    try:
-        from tavily import TavilyClient
-    except ImportError:
-        missing.append("tavily-python")
-    try:
-        import requests
-    except ImportError:
-        missing.append("requests")
-    try:
-        from google import genai
-    except ImportError:
-        missing.append("google-genai")
-    try:
-        from PIL import Image
-    except ImportError:
-        missing.append("pillow")
-    try:
-        import anthropic
-    except ImportError:
-        missing.append("anthropic")
-    return missing
+from typing import Optional
 
 
 @dataclass
@@ -85,90 +59,61 @@ class ImageCandidate:
     url: str
     description: Optional[str]
     image_data: Optional[bytes] = None
-    score: float = 0.0
+    matched_details: Optional[str] = None  # Haiku's analysis of how image matches subject
+    confidence_score: float = 0.0
 
 
 class ProductStudio:
     """Main class for product image generation workflow."""
 
-    # Aspect ratio mappings
-    ASPECT_RATIOS = {
-        "1:1": "1K",
-        "3:4": "1K",
-        "4:3": "1K",
-        "9:16": "1K",
-        "16:9": "1K",
-        "21:9": "1K",  # Will be handled as closest supported
-    }
+    VALID_RESOLUTIONS = {"1k", "2k", "4k"}
+    VALID_ASPECT_RATIOS = {"1:1", "4:3", "3:4", "16:9", "9:16", "21:9", "3:2", "2:3"}
 
-    # Detail level to size mapping
-    DETAIL_SIZES = {
-        "1k": "1K",
-        "2k": "2K",
-        "4k": "4K",
-    }
-
-    def __init__(self):
+    def __init__(self, debug: bool = False):
         self.tavily_key = os.environ.get("TAVILY_API_KEY")
         self.scrapeninja_key = os.environ.get("SCRAPENINJA_API_KEY")
         self.gemini_key = os.environ.get("GEMINI_API_KEY")
         self.anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+        self.debug = debug
+
+    def _debug_print(self, label: str, content: str):
+        """Print debug info to stderr."""
+        if self.debug:
+            print(f"\n{'='*60}", file=sys.stderr)
+            print(f"[DEBUG] {label}", file=sys.stderr)
+            print(f"{'='*60}", file=sys.stderr)
+            print(content, file=sys.stderr)
+            print(f"{'='*60}\n", file=sys.stderr)
 
     def preflight_check(self, output_dir: str) -> tuple[bool, str]:
-        """
-        Validate all prerequisites before starting the workflow.
-
-        Returns:
-            Tuple of (success, error_message)
-        """
+        """Validate all prerequisites before starting."""
         errors = []
 
-        # Check environment variables
         if not self.tavily_key:
-            errors.append("TAVILY_API_KEY environment variable not set. Get your key at https://tavily.com")
+            errors.append("TAVILY_API_KEY not set")
         if not self.scrapeninja_key:
-            errors.append("SCRAPENINJA_API_KEY environment variable not set. Get your key at https://rapidapi.com/restyler/api/scrapeninja")
+            errors.append("SCRAPENINJA_API_KEY not set")
         if not self.gemini_key:
-            errors.append("GEMINI_API_KEY environment variable not set. Get your key at https://aistudio.google.com/apikey")
+            errors.append("GEMINI_API_KEY not set")
         if not self.anthropic_key:
-            errors.append("ANTHROPIC_API_KEY environment variable not set. Get your key at https://console.anthropic.com")
+            errors.append("ANTHROPIC_API_KEY not set")
 
-        # Check output directory
         output_path = Path(output_dir)
         try:
             output_path.mkdir(parents=True, exist_ok=True)
-            # Create refs subdirectory for reference images
-            refs_path = output_path / ".refs"
-            refs_path.mkdir(exist_ok=True)
-        except PermissionError:
-            errors.append(f"Cannot create output directory: {output_dir} (permission denied)")
+            (output_path / ".refs").mkdir(exist_ok=True)
         except Exception as e:
-            errors.append(f"Cannot create output directory: {output_dir} ({e})")
-
-        # Check dependencies
-        missing_deps = check_dependencies()
-        if missing_deps:
-            errors.append(f"Missing Python dependencies: {', '.join(missing_deps)}. Run with 'uv run' to auto-install.")
+            errors.append(f"Cannot create output directory: {e}")
 
         if errors:
             return False, "\n".join(f"- {e}" for e in errors)
-
         return True, ""
 
     def search_images(self, query: str) -> list[ImageCandidate]:
-        """
-        Step 1: Search for reference images using Tavily.
-
-        Args:
-            query: Search query for finding reference images
-
-        Returns:
-            List of ImageCandidate objects
-        """
+        """Step 1: Search for reference images using Tavily."""
         from tavily import TavilyClient
 
         client = TavilyClient(api_key=self.tavily_key)
-
         response = client.search(
             query=query,
             include_images=True,
@@ -184,26 +129,13 @@ class ProductStudio:
                     description=img.get("description")
                 ))
             elif isinstance(img, str):
-                candidates.append(ImageCandidate(
-                    url=img,
-                    description=None
-                ))
+                candidates.append(ImageCandidate(url=img, description=None))
 
         return candidates
 
     def fetch_image(self, image_url: str) -> Optional[bytes]:
-        """
-        Step 2a: Fetch a single image through ScrapeNinja proxy.
-
-        Args:
-            image_url: URL of the image to fetch
-
-        Returns:
-            Image bytes or None if fetch failed
-        """
+        """Fetch a single image through ScrapeNinja proxy."""
         import requests
-
-        url = "https://scrapeninja.p.rapidapi.com/scrape"
 
         payload = {
             "url": image_url,
@@ -211,7 +143,6 @@ class ProductStudio:
             "retryNum": 1,
             "geo": "us"
         }
-
         headers = {
             "content-type": "application/json",
             "X-RapidAPI-Key": self.scrapeninja_key,
@@ -219,27 +150,21 @@ class ProductStudio:
         }
 
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            response = requests.post(
+                "https://scrapeninja.p.rapidapi.com/scrape",
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
             response_json = response.json()
-
             if "body" in response_json:
-                image_base64 = response_json["body"]
-                return base64.b64decode(image_base64)
-            return None
+                return base64.b64decode(response_json["body"])
         except Exception as e:
             print(f"Warning: Failed to fetch {image_url}: {e}", file=sys.stderr)
-            return None
+        return None
 
     def fetch_all_images(self, candidates: list[ImageCandidate]) -> list[ImageCandidate]:
-        """
-        Step 2: Fetch all candidate images.
-
-        Args:
-            candidates: List of ImageCandidate objects
-
-        Returns:
-            List of candidates with fetched image data
-        """
+        """Step 2: Fetch all candidate images."""
         fetched = []
         for candidate in candidates:
             if candidate.url:
@@ -252,74 +177,43 @@ class ProductStudio:
     def select_best_images(
         self,
         candidates: list[ImageCandidate],
-        prompt_needs: dict[str, Any],
-        max_images: int = 3
+        subject: str,
+        min_score: float = 7.0
     ) -> list[ImageCandidate]:
-        """
-        Step 3: Use Claude Haiku to select the best reference images.
-
-        Selection criteria:
-        - Consensus: Similar images from multiple sources
-        - Clarity: Simple, clean images preferred
-        - Relevance: Matches the generation needs
-
-        Args:
-            candidates: List of fetched ImageCandidate objects
-            prompt_needs: The prompt-image-creation-needs dict
-            max_images: Maximum number of images to select
-
-        Returns:
-            List of selected ImageCandidate objects (1-3)
-        """
+        """Step 3: Use Claude Haiku to score and analyze reference images."""
         import anthropic
 
         if not candidates:
             return []
 
-        if len(candidates) <= max_images:
-            return candidates
-
         client = anthropic.Anthropic(api_key=self.anthropic_key)
 
-        # Build the selection prompt
-        description = prompt_needs.get("description", "product image")
-        style = prompt_needs.get("style", "general")
-
-        # Prepare image content for Claude
-        content = []
-        content.append({
+        content = [{
             "type": "text",
-            "text": f"""Select the {max_images} best reference images for generating a {style} image.
+            "text": f"""Analyze each image for how well it represents: {subject}
 
-Target: {description}
+For EACH image, provide:
+- confidence_score: 0-10 (how well it matches the subject)
+- matched_details: what specific elements in the image match the subject
 
-Selection criteria (in order of importance):
-1. CONSENSUS: If multiple images show the same/similar view, prefer those (indicates accuracy)
-2. CLARITY: Prefer clean, simple images over cluttered screenshots or complex backgrounds
-3. RELEVANCE: Image directly shows what we need to generate
-4. QUALITY: Sufficient resolution and detail
-
-For each candidate image below, I'll show you the image and its description (if available).
-After reviewing all images, respond with ONLY a JSON array of the indices (0-based) of the best {max_images} images.
-
-Example response: [0, 3, 5]
+Respond with ONLY a JSON array:
+[
+  {{"index": 0, "confidence_score": 9, "matched_details": "Shows exploded view with labeled bracket, runner, and locking device"}},
+  {{"index": 1, "confidence_score": 3, "matched_details": "Only shows packaging, not the actual product"}}
+]
 """
-        })
+        }]
 
-        # Add each candidate image (optimize for Haiku processing)
-        valid_images = 0
+        valid_indices = []
         for i, candidate in enumerate(candidates):
             if candidate.image_data:
-                # Optimize image for API processing (resize, convert to standard format)
                 mime_type, optimized_data = self._optimize_image(candidate.image_data, max_dimension=1024)
-
-                # Skip images that couldn't be processed (e.g., AVIF)
-                if mime_type is None or optimized_data is None:
+                if mime_type is None:
                     continue
 
                 content.append({
                     "type": "text",
-                    "text": f"\n--- Image {valid_images} ---\nDescription: {candidate.description or 'No description'}\n"
+                    "text": f"\n--- Image {len(valid_indices)} ---\nDescription: {candidate.description or 'None'}\n"
                 })
                 content.append({
                     "type": "image",
@@ -329,51 +223,64 @@ Example response: [0, 3, 5]
                         "data": base64.b64encode(optimized_data).decode()
                     }
                 })
-                valid_images += 1
+                valid_indices.append(i)
 
         content.append({
             "type": "text",
-            "text": f"\nRespond with ONLY a JSON array of the {max_images} best image indices:"
+            "text": "\nRespond with ONLY the JSON array, no other text:"
         })
+
+        # Debug: print prompt (text parts only)
+        if self.debug:
+            prompt_text = "\n".join(
+                item["text"] for item in content if item["type"] == "text"
+            )
+            self._debug_print("HAIKU PROMPT", f"{prompt_text}\n\n[+ {len(valid_indices)} images]")
 
         try:
             response = client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=100,
+                max_tokens=1000,
                 messages=[{"role": "user", "content": content}]
             )
 
-            # Parse the response
             response_text = response.content[0].text.strip()
-
+            self._debug_print("HAIKU RESPONSE", response_text)
+            
             # Extract JSON array from response
             import re
-            match = re.search(r'\[[\d,\s]+\]', response_text)
+            match = re.search(r'\[.*\]', response_text, re.DOTALL)
             if match:
-                indices = json.loads(match.group())
+                scores = json.loads(match.group())
+                
+                # Filter by min_score and attach details to candidates
                 selected = []
-                for idx in indices[:max_images]:
-                    if 0 <= idx < len(candidates):
-                        selected.append(candidates[idx])
+                for item in scores:
+                    idx = item.get("index", -1)
+                    score = item.get("confidence_score", 0)
+                    details = item.get("matched_details", "")
+                    
+                    if score >= min_score and 0 <= idx < len(valid_indices):
+                        candidate = candidates[valid_indices[idx]]
+                        candidate.confidence_score = score
+                        candidate.matched_details = details
+                        selected.append(candidate)
+                        print(f"    Image {idx}: score={score}, {details[:60]}...", file=sys.stderr)
+                
+                # Sort by score descending
+                selected.sort(key=lambda c: c.confidence_score, reverse=True)
                 return selected
-
+                
         except Exception as e:
-            print(f"Warning: Haiku selection failed ({e}), using first {max_images} images", file=sys.stderr)
+            print(f"Warning: Selection failed ({e}), using first 3", file=sys.stderr)
 
-        # Fallback: return first max_images
-        return candidates[:max_images]
+        return candidates[:3]
 
     def _detect_image_format(self, image_data: bytes) -> str:
-        """
-        Detect actual image format from file bytes (magic numbers).
-
-        Returns:
-            File extension including dot (e.g., ".jpg", ".png")
-        """
+        """Detect image format from magic bytes."""
         if len(image_data) < 12:
             return ".bin"
 
-        # Check magic numbers
         if image_data[:3] == b'\xff\xd8\xff':
             return ".jpg"
         elif image_data[:8] == b'\x89PNG\r\n\x1a\n':
@@ -382,42 +289,25 @@ Example response: [0, 3, 5]
             return ".webp"
         elif image_data[:4] == b'GIF8':
             return ".gif"
-        elif image_data[4:12] == b'ftypavif' or image_data[4:12] == b'ftypavis':
+        elif image_data[4:12] in (b'ftypavif', b'ftypavis'):
             return ".avif"
-        elif image_data[4:12] == b'ftypheic' or image_data[4:12] == b'ftypmif1':
+        elif image_data[4:12] in (b'ftypheic', b'ftypmif1'):
             return ".heic"
-        else:
-            return ".bin"
+        return ".bin"
 
-    def _optimize_image(self, image_data: bytes, max_dimension: int = 3072) -> tuple[str, bytes]:
-        """
-        Optimize image for API processing.
-        - Converts unsupported formats (AVIF, HEIC) to JPEG/PNG
-        - Resizes if too large
-        - Supported output: JPEG, PNG (compatible with Claude & Gemini)
-
-        Args:
-            image_data: Raw image bytes
-            max_dimension: Maximum width or height
-
-        Returns:
-            Tuple of (mime_type, optimized_bytes)
-        """
+    def _optimize_image(self, image_data: bytes, max_dimension: int = 3072) -> tuple[Optional[str], Optional[bytes]]:
+        """Optimize image for API processing."""
         from PIL import Image
 
         try:
             img = Image.open(io.BytesIO(image_data))
             width, height = img.size
 
-            # Resize if needed
             if max(width, height) > max_dimension:
                 scale = max_dimension / max(width, height)
-                new_size = (int(width * scale), int(height * scale))
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                img = img.resize((int(width * scale), int(height * scale)), Image.Resampling.LANCZOS)
 
             buffer = io.BytesIO()
-
-            # Always convert to JPEG or PNG (universally supported)
             if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
                 img.save(buffer, format="PNG", optimize=True)
                 return "image/png", buffer.getvalue()
@@ -425,97 +315,78 @@ Example response: [0, 3, 5]
                 img = img.convert("RGB")
                 img.save(buffer, format="JPEG", quality=85)
                 return "image/jpeg", buffer.getvalue()
-
         except Exception as e:
-            # If PIL can't open (e.g., AVIF without pillow-avif-plugin), skip this image
-            print(f"Warning: Image optimization failed ({e}), skipping", file=sys.stderr)
+            print(f"Warning: Image optimization failed ({e})", file=sys.stderr)
             return None, None
 
     def generate_image(
         self,
         reference_images: list[ImageCandidate],
-        prompt_needs: dict[str, Any],
-        gen_params: dict[str, Any],
-        search_query: str = ""
+        subject: str,
+        style_instructions: str,
+        resolution: str,
+        aspect_ratio: str
     ) -> tuple[list[bytes], dict[str, int], str]:
-        """
-        Step 4: Generate the product image using Gemini.
-
-        Args:
-            reference_images: Selected reference ImageCandidate objects
-            prompt_needs: Generation requirements (colors, style, etc.)
-            gen_params: Extra generation parameters (ratio, detail, count)
-            search_query: Original search query for context
-
-        Returns:
-            Tuple of (list of generated image bytes, token usage dict, text response)
-        """
+        """Step 4: Generate the product image using Gemini."""
         from google import genai
         from google.genai import types
 
         client = genai.Client(api_key=self.gemini_key)
 
-        # Build the generation prompt - use search_query as the primary description
-        colors = prompt_needs.get("colors", [])
-        style = prompt_needs.get("style", "product image")
-        ascii_sketch = prompt_needs.get("ascii_sketch", "")
-        labels = prompt_needs.get("labels", [])  # Explicit labels for infographics
+        parts = []
+        
+        # 1. Header Text
+        parts.append(types.Part.from_text(text=f"TASK: Generate an image of `{subject}`.\n\nHere are the reference images:"))
 
-        # Build brand styling string
-        brand_styling = []
-        if colors:
-            brand_styling.append(f"colors: {', '.join(colors)}")
-        if style:
-            brand_styling.append(f"style: {style}")
-        brand_string = "; ".join(brand_styling) if brand_styling else "professional e-commerce"
-
-        # Core prompt using search query as the description
-        prompt_parts = [
-            f"Create a {style} about {search_query} that fits the brand's styling guidelines of {brand_string}.",
-            "",
-            "CRITICAL: Match the EXACT product shown in the reference image.",
-            "CRITICAL: Show only ONE set of the product components, not duplicates.",
-        ]
-
-        # Text/label handling: explicit labels for infographics, otherwise no text
-        if labels:
-            prompt_parts.append(f"IMPORTANT: Include ONLY these labels in the image: {', '.join(labels)}")
-            prompt_parts.append("Do not include any other text besides these specified labels.")
-        else:
-            prompt_parts.append("IMPORTANT: Do not include any text in the image.")
-
-        if ascii_sketch:
-            prompt_parts.append(f"\nLayout guide:\n{ascii_sketch}")
-
-        full_prompt = "\n".join(p for p in prompt_parts if p)
-
-        # Build content with reference images
-        parts = [types.Part.from_text(text=full_prompt)]
-
-        for ref in reference_images:
+        # 2. Images (Interleaved)
+        for i, ref in enumerate(reference_images):
             if ref.image_data:
                 mime_type, optimized_data = self._optimize_image(ref.image_data)
-                # Skip images that couldn't be processed
-                if mime_type is None or optimized_data is None:
-                    continue
-                parts.append(types.Part.from_bytes(data=optimized_data, mime_type=mime_type))
-                if ref.description:
-                    parts.append(types.Part.from_text(text=f"Reference context: {ref.description}"))
+                if mime_type and optimized_data:
+                    # Label
+                    parts.append(types.Part.from_text(text=f"\n**Reference Image {i+1}:**"))
+                    # Image
+                    parts.append(types.Part.from_bytes(data=optimized_data, mime_type=mime_type))
+
+        # 3. Instructions & Style (Final Text Block)
+        style_line = f"\n\nApply styling: {style_instructions}" if style_instructions else ""
+        
+        final_instructions = f"""
+INSTRUCTIONS:
+1. First, analyze the reference image(s) above to identify the key product components, structure, and visual style.
+2. Second, understand the specific product details that make this item unique—accurate components matter.
+3. Third, plan the composition and layout that best presents this subject.
+4. Finally, generate the image combining accurate product details with professional presentation.{style_line}
+
+Do not include the subject title text in the image unless explicitly requested."""
+
+        parts.append(types.Part.from_text(text=final_instructions))
 
         contents = [types.Content(role="user", parts=parts)]
 
-        # Configure generation
-        detail = gen_params.get("detail", "1k").lower()
-        image_size = self.DETAIL_SIZES.get(detail, "1K")
+        # Map resolution to Gemini size
+        size_map = {"1k": "1K", "2k": "2K", "4k": "4K"}
+        image_size = size_map.get(resolution.lower(), "1K")
 
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
             image_config=types.ImageConfig(
+                aspect_ratio=aspect_ratio,
                 image_size=image_size
             ),
         )
 
-        # Generate
+        # Debug: print exact parts structure
+        if self.debug:
+            parts_debug = []
+            for i, part in enumerate(parts):
+                if hasattr(part, 'text') and part.text:
+                    parts_debug.append(f"parts[{i}] = Part.from_text(text='''{part.text}''')")
+                else:
+                    parts_debug.append(f"parts[{i}] = Part.from_bytes(data=<image bytes>, mime_type='image/...')")
+            
+            self._debug_print("GEMINI PARTS STRUCTURE", "\n\n".join(parts_debug) + f"\n\n[config: aspect_ratio={aspect_ratio}, image_size={image_size}]")
+
         response = client.models.generate_content(
             model="gemini-3-pro-image-preview",
             contents=contents,
@@ -532,13 +403,9 @@ Example response: [0, 3, 5]
                 if part.text:
                     text_response += part.text
 
-        # Extract token usage
-        token_usage = {
-            "input": 0,
-            "output": 0,
-            "total": 0
-        }
+        self._debug_print("GEMINI RESPONSE", f"Generated {len(generated_images)} image(s)\nText: {text_response or '(none)'}")
 
+        token_usage = {"input": 0, "output": 0, "total": 0}
         if response.usage_metadata:
             token_usage["input"] = response.usage_metadata.prompt_token_count or 0
             token_usage["output"] = response.usage_metadata.candidates_token_count or 0
@@ -552,17 +419,7 @@ Example response: [0, 3, 5]
         reference_images: list[ImageCandidate],
         output_dir: str
     ) -> tuple[list[str], list[str]]:
-        """
-        Step 5: Save generated and reference images.
-
-        Args:
-            generated_images: List of generated image bytes
-            reference_images: List of reference ImageCandidate objects
-            output_dir: Output directory path
-
-        Returns:
-            Tuple of (list of generated file paths, list of reference file paths)
-        """
+        """Step 5: Save generated and reference images."""
         output_path = Path(output_dir)
         refs_path = output_path / ".refs"
         refs_path.mkdir(exist_ok=True)
@@ -571,208 +428,138 @@ Example response: [0, 3, 5]
 
         generated_files = []
         for i, img_data in enumerate(generated_images):
-            filename = f"product_{timestamp}_{i}.png"
-            filepath = output_path / filename
-            with open(filepath, "wb") as f:
-                f.write(img_data)
+            filepath = output_path / f"product_{timestamp}_{i}.png"
+            filepath.write_bytes(img_data)
             generated_files.append(str(filepath))
 
         ref_files = []
         for i, ref in enumerate(reference_images):
             if ref.image_data:
-                # Detect actual image format from bytes, not URL
                 ext = self._detect_image_format(ref.image_data)
-
-                filename = f"ref_{timestamp}_{i}{ext}"
-                filepath = refs_path / filename
-                with open(filepath, "wb") as f:
-                    f.write(ref.image_data)
+                filepath = refs_path / f"ref_{timestamp}_{i}{ext}"
+                filepath.write_bytes(ref.image_data)
                 ref_files.append(str(filepath))
 
         return generated_files, ref_files
 
     def run(
         self,
-        image_reference_query: str,
-        prompt_needs: dict[str, Any],
-        gen_params: dict[str, Any],
+        subject: str,
+        style_instructions: str,
+        resolution: str,
+        aspect_ratio: str,
         output_dir: str
     ) -> GenerationResult:
-        """
-        Execute the complete image generation workflow.
+        """Execute the complete image generation workflow."""
 
-        Args:
-            image_reference_query: Search query for Tavily
-            prompt_needs: Generation requirements
-            gen_params: Extra generation parameters
-            output_dir: Output directory
-
-        Returns:
-            GenerationResult with status and outputs
-        """
-        # Pre-flight check
+        # Preflight
         success, error_msg = self.preflight_check(output_dir)
         if not success:
-            return GenerationResult(
-                status="error",
-                message=f"Pre-flight check failed:\n{error_msg}"
-            )
+            return GenerationResult(status="error", message=f"Preflight failed:\n{error_msg}")
 
         # Step 1: Search
-        print("Step 1/5: Searching for reference images...", file=sys.stderr)
-        try:
-            candidates = self.search_images(image_reference_query)
-            if not candidates:
-                return GenerationResult(
-                    status="error",
-                    message=f"No reference images found for query: '{image_reference_query}'\n\nSuggestions:\n- Try broader search terms\n- Remove specific model numbers\n- Provide an ASCII sketch as alternative guidance"
-                )
-            print(f"  Found {len(candidates)} candidate images", file=sys.stderr)
-        except Exception as e:
+        print("Step 1/4: Searching for reference images...", file=sys.stderr)
+        candidates = self.search_images(subject)
+        if not candidates:
             return GenerationResult(
                 status="error",
-                message=f"Tavily search failed: {e}\n\nCheck your TAVILY_API_KEY and internet connection."
+                message=f"No reference images found for: '{subject}'"
             )
+        print(f"  Found {len(candidates)} candidates", file=sys.stderr)
 
-        # Step 2: Fetch
-        print("Step 2/5: Fetching reference images...", file=sys.stderr)
-        try:
-            fetched = self.fetch_all_images(candidates)
-            if not fetched:
-                return GenerationResult(
-                    status="error",
-                    message="Failed to fetch any reference images.\n\nThe images may be blocked or unavailable. Try:\n- Different search terms\n- Providing an ASCII sketch as guidance"
-                )
-            print(f"  Successfully fetched {len(fetched)} images", file=sys.stderr)
-        except Exception as e:
+        # Step 2: Fetch first image only
+        print("Step 2/4: Fetching first reference image...", file=sys.stderr)
+        first_candidate = candidates[0]
+        image_data = self.fetch_image(first_candidate.url)
+        if not image_data:
             return GenerationResult(
                 status="error",
-                message=f"Image fetching failed: {e}"
+                message="Failed to fetch reference image"
             )
+        first_candidate.image_data = image_data
+        selected = [first_candidate]
+        print(f"  Fetched 1 image", file=sys.stderr)
 
-        # Step 3: Select
-        print("Step 3/5: Selecting best reference images...", file=sys.stderr)
-        try:
-            selected = self.select_best_images(fetched, prompt_needs)
-            print(f"  Selected {len(selected)} reference images", file=sys.stderr)
-        except Exception as e:
-            print(f"  Warning: Selection failed ({e}), using first 3", file=sys.stderr)
-            selected = fetched[:3]
-
-        # Step 4: Generate (use only first reference for cleaner output)
-        print("Step 4/5: Generating product image...", file=sys.stderr)
-        # Use only the best reference image for cleaner generation
-        best_reference = selected[:1]  # Take only the first (best) reference
-        try:
-            generated_images, token_usage, text_response = self.generate_image(
-                best_reference, prompt_needs, gen_params, search_query=image_reference_query
-            )
-            if not generated_images:
-                return GenerationResult(
-                    status="error",
-                    message=f"Gemini generation returned no images.\n\nResponse: {text_response}\n\nTry:\n- Simplifying the prompt\n- Using different reference images"
-                )
-            print(f"  Generated {len(generated_images)} images", file=sys.stderr)
-        except Exception as e:
+        # Step 4: Generate
+        print("Step 3/4: Generating image...", file=sys.stderr)
+        generated_images, token_usage, text_response = self.generate_image(
+            selected,
+            subject,
+            style_instructions,
+            resolution,
+            aspect_ratio
+        )
+        if not generated_images:
             return GenerationResult(
                 status="error",
-                message=f"Gemini generation failed: {e}\n\nCheck your GEMINI_API_KEY and try again."
+                message=f"Gemini returned no images. Response: {text_response}"
             )
+        print(f"  Generated {len(generated_images)} images", file=sys.stderr)
 
         # Step 5: Save
-        print("Step 5/5: Saving outputs...", file=sys.stderr)
-        try:
-            generated_files, ref_files = self.save_outputs(
-                generated_images, selected, output_dir
-            )
-        except Exception as e:
-            return GenerationResult(
-                status="error",
-                message=f"Failed to save outputs: {e}"
-            )
+        print("Step 4/4: Saving outputs...", file=sys.stderr)
+        generated_files, ref_files = self.save_outputs(generated_images, selected, output_dir)
 
         return GenerationResult(
             status="success",
             files=generated_files,
             reference_images=ref_files,
             token_usage=token_usage,
-            message=f"Successfully generated {len(generated_files)} image(s). Reference images saved for debugging."
+            message=f"Generated {len(generated_files)} image(s)"
         )
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Product Studio - AI-powered product image generation",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    uv run product_studio.py \\
-        --image-reference-query "Blum TANDEM drawer slide exploded view" \\
-        --prompt-image-creation-needs '{"colors": ["#dc2626"], "style": "technical diagram"}' \\
-        --output "assets/generated/"
-        """
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
     parser.add_argument(
-        "--image-reference-query",
+        "--subject",
         required=True,
-        help="Search query for finding reference images via Tavily"
+        help="Product/component description for search and generation"
     )
-
     parser.add_argument(
-        "--prompt-image-creation-needs",
-        required=True,
-        help="JSON object with colors, style, approach, target_audience, ascii_sketch, description"
+        "--style-instructions",
+        default="",
+        help="Format and style directives"
     )
-
     parser.add_argument(
-        "--extra-gen-parameters",
-        default="{}",
-        help="JSON object with ratio, detail, count (optional)"
+        "--resolution",
+        default="1k",
+        choices=["1k", "2k", "4k"],
+        help="Output resolution (default: 1k)"
     )
-
+    parser.add_argument(
+        "--aspect-ratio",
+        default="21:9",
+        choices=["1:1", "4:3", "3:4", "16:9", "9:16", "21:9", "3:2", "2:3"],
+        help="Output aspect ratio (default: 21:9)"
+    )
     parser.add_argument(
         "--output",
         default="assets/generated/",
-        help="Output directory for generated images (default: assets/generated/)"
+        help="Output directory (default: assets/generated/)"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print prompts and responses for debugging"
     )
 
     args = parser.parse_args()
 
-    # Parse JSON arguments
-    try:
-        prompt_needs = json.loads(args.prompt_image_creation_needs)
-    except json.JSONDecodeError as e:
-        result = GenerationResult(
-            status="error",
-            message=f"Invalid JSON in --prompt-image-creation-needs: {e}"
-        )
-        print(result.to_json())
-        sys.exit(1)
-
-    try:
-        gen_params = json.loads(args.extra_gen_parameters)
-    except json.JSONDecodeError as e:
-        result = GenerationResult(
-            status="error",
-            message=f"Invalid JSON in --extra-gen-parameters: {e}"
-        )
-        print(result.to_json())
-        sys.exit(1)
-
-    # Run the workflow
-    studio = ProductStudio()
+    studio = ProductStudio(debug=args.debug)
     result = studio.run(
-        image_reference_query=args.image_reference_query,
-        prompt_needs=prompt_needs,
-        gen_params=gen_params,
+        subject=args.subject,
+        style_instructions=args.style_instructions,
+        resolution=args.resolution,
+        aspect_ratio=args.aspect_ratio,
         output_dir=args.output
     )
 
-    # Output result as JSON
     print(result.to_json())
-
-    # Exit with appropriate code
     sys.exit(0 if result.status == "success" else 1)
 
 
