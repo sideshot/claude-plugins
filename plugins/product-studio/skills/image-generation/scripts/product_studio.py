@@ -6,6 +6,7 @@
 #     "google-genai",
 #     "pillow",
 #     "anthropic",
+#     "httpx[socks]",
 # ]
 # ///
 """
@@ -14,7 +15,7 @@ Product Studio - AI-powered product image generation for e-commerce.
 Workflow: Search → Fetch → Select → Generate → Save
 
 Usage:
-    uv run product_studio.py \
+    uv run --no-cache product_studio.py \
         --subject "[Brand] [Model] [product type] exploded view" \
         --style-instructions "Technical diagram, white background" \
         --resolution 2k \
