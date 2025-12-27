@@ -355,6 +355,7 @@ Respond with ONLY a JSON array:
         final_instructions = f"""
 INSTRUCTIONS:
 1. First, analyze the reference image(s) above to identify the key product components, structure, and visual style.
+   Note: Reference images may contain errors or be irrelevant. If a reference image clearly conflicts with the subject description or appears unrelated, ignore that specific image or element.
 2. Second, understand the specific product details that make this item unique—accurate components matter.
 3. Third, plan the composition and layout that best presents this subject.
 4. Finally, generate the image combining accurate product details with professional presentation.{style_line}
@@ -468,18 +469,25 @@ Do not include the subject title text in the image unless explicitly requested."
             )
         print(f"  Found {len(candidates)} candidates", file=sys.stderr)
 
-        # Step 2: Fetch first image only
-        print("Step 2/4: Fetching first reference image...", file=sys.stderr)
-        first_candidate = candidates[0]
-        image_data = self.fetch_image(first_candidate.url)
-        if not image_data:
+        # Step 2: Fetch reference images
+        print("Step 2/4: Fetching reference images...", file=sys.stderr)
+        selected = []
+        for candidate in candidates:
+            if len(selected) >= 3:
+                break
+            
+            image_data = self.fetch_image(candidate.url)
+            if image_data:
+                candidate.image_data = image_data
+                selected.append(candidate)
+                print(f"  Fetched image from {candidate.url}", file=sys.stderr)
+        
+        if not selected:
             return GenerationResult(
                 status="error",
-                message="Failed to fetch reference image"
+                message="Failed to fetch any reference images"
             )
-        first_candidate.image_data = image_data
-        selected = [first_candidate]
-        print(f"  Fetched 1 image", file=sys.stderr)
+        print(f"  Fetched {len(selected)} images", file=sys.stderr)
 
         # Step 4: Generate
         print("Step 3/4: Generating image...", file=sys.stderr)
