@@ -1,7 +1,7 @@
 ---
-name: Image Generation
+name: image-generation
 description: This skill should be used when the user asks to "generate product images", "create infographics", "make exploded view diagrams", "create marketing shots", "generate e-commerce visuals", "build product diagrams", or mentions image generation for products. Provides guidance on using the product_studio.py script.
-version: 0.2.2
+version: 0.2.3
 ---
 
 # Product Image Generation

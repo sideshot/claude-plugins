@@ -8,7 +8,7 @@
       "name": "product-studio",
       "source": "./plugins/product-studio",
       "description": "AI-powered product image generation for e-commerce",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "keywords": [
         "image-generation",
         "product-images",
